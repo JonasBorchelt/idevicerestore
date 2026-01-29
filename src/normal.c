@@ -163,12 +163,16 @@ irecv_device_t normal_get_irecv_device(struct idevicerestore_client_t* client)
 	lockdownd_error_t lockdown_error = LOCKDOWN_E_SUCCESS;
 	irecv_device_t irecv_device = NULL;
 
+	logger(LL_DEBUG, "%s: attempting to get irecv device in normal mode\n", __func__);
+
 	normal_idevice_new(client, &device);
 	if (!device) {
+		logger(LL_DEBUG, "%s: normal_idevice_new failed to return a device\n", __func__);
 		return NULL;
 	}
 
 	lockdown_error = lockdownd_client_new_with_handshake(device, &lockdown, "idevicerestore");
+	logger(LL_DEBUG, "%s: lockdownd_client_new_with_handshake returned %d\n", __func__, lockdown_error);
 	if (!(client->flags & FLAG_ERASE) && lockdown_error == LOCKDOWN_E_PAIRING_DIALOG_RESPONSE_PENDING) {
 		show_banner("Device is not paired with this computer. Please trust this computer on the device to continue.\n");
 		while (!(client->flags & FLAG_QUIT)) {
@@ -184,22 +188,35 @@ irecv_device_t normal_get_irecv_device(struct idevicerestore_client_t* client)
 		}
 	}
 	if (lockdown_error != LOCKDOWN_E_SUCCESS) {
+		logger(LL_DEBUG, "%s: handshake failed, trying lockdownd_client_new without handshake\n", __func__);
 		lockdown_error = lockdownd_client_new(device, &lockdown, "idevicerestore");
 	}
 	if (lockdown_error != LOCKDOWN_E_SUCCESS) {
+		logger(LL_DEBUG, "%s: failed to connect to lockdownd: %d\n", __func__, lockdown_error);
 		idevice_free(device);
 		return NULL;
 	}
 
 	plist_t pval = NULL;
-	lockdownd_get_value(lockdown, NULL, "HardwareModel", &pval);
+	lockdownd_error_t val_error = lockdownd_get_value(lockdown, NULL, "HardwareModel", &pval);
+	logger(LL_DEBUG, "%s: lockdownd_get_value for HardwareModel returned %d\n", __func__, val_error);
 	if (pval && (plist_get_node_type(pval) == PLIST_STRING)) {
 		char *strval = NULL;
 		plist_get_string_val(pval, &strval);
 		if (strval) {
-			irecv_devices_get_device_by_hardware_model(strval, &irecv_device);
+			logger(LL_DEBUG, "%s: HardwareModel is '%s'\n", __func__, strval);
+			irecv_error_t irecv_err = irecv_devices_get_device_by_hardware_model(strval, &irecv_device);
+			if (irecv_err != IRECV_E_SUCCESS || !irecv_device) {
+				logger(LL_DEBUG, "%s: irecv_devices_get_device_by_hardware_model failed for '%s': %d\n", __func__, strval, irecv_err);
+			} else {
+				logger(LL_DEBUG, "%s: found device: %s (%s)\n", __func__, irecv_device->product_type, irecv_device->hardware_model);
+			}
 			free(strval);
+		} else {
+			logger(LL_DEBUG, "%s: failed to get string value from HardwareModel plist\n", __func__);
 		}
+	} else {
+		logger(LL_DEBUG, "%s: HardwareModel value is NULL or not a string (pval=%p)\n", __func__, pval);
 	}
 	plist_free(pval);
 

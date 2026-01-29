@@ -1261,7 +1261,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		if (client->flags & FLAG_QUIT) {
 			return -1;
 		}
-		
+
 		if (client->mode == MODE_RESTORE && client->root_ticket) {
 			plist_t ap_ticket = plist_new_data((char*)client->root_ticket, client->root_ticket_len);
 			if (!ap_ticket) {
@@ -2379,9 +2379,14 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	plist_t parameters = plist_new_dict();
 	plist_dict_merge(&parameters, client->parameters);
 
+	logger(LL_INFO, "DEBUG TSS: Building TSS request parameters\n");
 	plist_dict_set_item(parameters, "ApECID", plist_new_uint(client->ecid));
+	logger(LL_INFO, "DEBUG TSS: ApECID = %" PRIu64 "\n", client->ecid);
 	if (client->nonce) {
 		plist_dict_set_item(parameters, "ApNonce", plist_new_data((const char*)client->nonce, client->nonce_size));
+		logger(LL_INFO, "DEBUG TSS: ApNonce set (size=%u)\n", client->nonce_size);
+	} else {
+		logger(LL_INFO, "DEBUG TSS: WARNING - No ApNonce available!\n");
 	}
 
 	if (!plist_dict_get_item(parameters, "SepNonce")) {
@@ -2390,21 +2395,31 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 		get_sep_nonce(client, &sep_nonce, &sep_nonce_size);
 		if (sep_nonce) {
 			plist_dict_set_item(parameters, "ApSepNonce", plist_new_data((const char*)sep_nonce, sep_nonce_size));
+			logger(LL_INFO, "DEBUG TSS: ApSepNonce set (size=%u)\n", sep_nonce_size);
 			free(sep_nonce);
+		} else {
+			logger(LL_INFO, "DEBUG TSS: WARNING - No SepNonce available!\n");
 		}
+	} else {
+		logger(LL_INFO, "DEBUG TSS: SepNonce already in parameters\n");
 	}
 
 	plist_dict_set_item(parameters, "ApProductionMode", plist_new_bool(1));
+	logger(LL_INFO, "DEBUG TSS: ApProductionMode = true\n");
 	if (client->image4supported) {
 		plist_dict_set_item(parameters, "ApSecurityMode", plist_new_bool(1));
 		plist_dict_set_item(parameters, "ApSupportsImg4", plist_new_bool(1));
+		logger(LL_INFO, "DEBUG TSS: ApSecurityMode = true, ApSupportsImg4 = true (Image4 supported)\n");
 	} else {
 		plist_dict_set_item(parameters, "ApSupportsImg4", plist_new_bool(0));
+		logger(LL_INFO, "DEBUG TSS: ApSupportsImg4 = false (Image4 not supported)\n");
 	}
 
+	logger(LL_INFO, "DEBUG TSS: Adding parameters from manifest...\n");
 	tss_parameters_add_from_manifest(parameters, build_identity, true);
 
 	/* create basic request */
+	logger(LL_INFO, "DEBUG TSS: Creating TSS request...\n");
 	request = tss_request_new(NULL);
 	if (request == NULL) {
 		logger(LL_ERROR, "Unable to create TSS request\n");
@@ -2413,6 +2428,7 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	}
 
 	/* add common tags from manifest */
+	logger(LL_INFO, "DEBUG TSS: Adding common tags...\n");
 	if (tss_request_add_common_tags(request, parameters, NULL) < 0) {
 		logger(LL_ERROR, "Unable to add common tags to TSS request\n");
 		plist_free(request);
@@ -2421,6 +2437,7 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	}
 
 	/* add tags from manifest */
+	logger(LL_INFO, "DEBUG TSS: Adding AP tags...\n");
 	if (tss_request_add_ap_tags(request, parameters, NULL) < 0) {
 		logger(LL_ERROR, "Unable to add common tags to TSS request\n");
 		plist_free(request);
@@ -2430,6 +2447,7 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 
 	if (client->image4supported) {
 		/* add personalized parameters */
+		logger(LL_INFO, "DEBUG TSS: Adding AP img4 tags...\n");
 		if (tss_request_add_ap_img4_tags(request, parameters) < 0) {
 			logger(LL_ERROR, "Unable to add img4 tags to TSS request\n");
 			plist_free(request);
@@ -2438,6 +2456,7 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 		}
 	} else {
 		/* add personalized parameters */
+		logger(LL_INFO, "DEBUG TSS: Adding AP img3 tags...\n");
 		if (tss_request_add_ap_img3_tags(request, parameters) < 0) {
 			logger(LL_ERROR, "Unable to add img3 tags to TSS request\n");
 			plist_free(request);
@@ -2449,46 +2468,136 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	if (client->mode == MODE_NORMAL) {
 		/* normal mode; request baseband ticket aswell */
 		plist_t pinfo = NULL;
+		logger(LL_INFO, "DEBUG TSS: Normal mode - getting firmware preflight info...\n");
 		normal_get_firmware_preflight_info(client, &pinfo);
 		if (pinfo) {
+			logger(LL_INFO, "DEBUG TSS: FirmwarePreflightInfo received, extracting baseband parameters...\n");
+
+			/* Log the preflight info contents */
+			char *pinfo_xml = NULL;
+			uint32_t pinfo_len = 0;
+			plist_to_xml(pinfo, &pinfo_xml, &pinfo_len);
+			if (pinfo_xml) {
+				logger(LL_INFO, "DEBUG TSS: FirmwarePreflightInfo contents:\n%s\n", pinfo_xml);
+				free(pinfo_xml);
+			}
+
 			plist_dict_copy_data(parameters, pinfo, "BbNonce", "Nonce");
 			plist_dict_copy_uint(parameters, pinfo, "BbChipID", "ChipID");
 			plist_dict_copy_uint(parameters, pinfo, "BbGoldCertId", "CertID");
 			plist_dict_copy_data(parameters, pinfo, "BbSNUM", "ChipSerialNo");
 
+			/* Log extracted baseband parameters */
+			plist_t bb_nonce = plist_dict_get_item(parameters, "BbNonce");
+			plist_t bb_chipid = plist_dict_get_item(parameters, "BbChipID");
+			plist_t bb_certid = plist_dict_get_item(parameters, "BbGoldCertId");
+			plist_t bb_snum = plist_dict_get_item(parameters, "BbSNUM");
+
+			logger(LL_INFO, "DEBUG TSS: BbNonce present: %s\n", bb_nonce ? "yes" : "NO");
+			logger(LL_INFO, "DEBUG TSS: BbChipID present: %s\n", bb_chipid ? "yes" : "NO");
+			logger(LL_INFO, "DEBUG TSS: BbGoldCertId present: %s\n", bb_certid ? "yes" : "NO");
+			logger(LL_INFO, "DEBUG TSS: BbSNUM present: %s\n", bb_snum ? "yes" : "NO");
+
+			if (bb_chipid) {
+				uint64_t chipid_val = 0;
+				plist_get_uint_val(bb_chipid, &chipid_val);
+				logger(LL_INFO, "DEBUG TSS: BbChipID value: %" PRIu64 "\n", chipid_val);
+			}
+			if (bb_certid) {
+				uint64_t certid_val = 0;
+				plist_get_uint_val(bb_certid, &certid_val);
+				logger(LL_INFO, "DEBUG TSS: BbGoldCertId value: %" PRIu64 "\n", certid_val);
+			}
+
 			if (plist_dict_get_item(parameters, "BbSNUM")) {
 				/* add baseband parameters */
+				logger(LL_INFO, "DEBUG TSS: Adding baseband tags...\n");
 				tss_request_add_baseband_tags(request, parameters, NULL);
 
 				plist_dict_copy_uint(parameters, pinfo, "eUICC,ChipID", "EUICCChipID");
-				if (plist_dict_get_uint(parameters, "eUICC,ChipID") >= 5) {
+				uint64_t euicc_chipid = plist_dict_get_uint(parameters, "eUICC,ChipID");
+				logger(LL_INFO, "DEBUG TSS: eUICC,ChipID = %" PRIu64 "\n", euicc_chipid);
+
+				if (euicc_chipid >= 5) {
+					logger(LL_INFO, "DEBUG TSS: eUICC ChipID >= 5, checking for vinyl parameters...\n");
 					plist_dict_copy_data(parameters, pinfo, "eUICC,EID", "EUICCCSN");
 					plist_dict_copy_data(parameters, pinfo, "eUICC,RootKeyIdentifier", "EUICCCertIdentifier");
 					plist_dict_copy_data(parameters, pinfo, "EUICCGoldNonce", NULL);
 					plist_dict_copy_data(parameters, pinfo, "EUICCMainNonce", NULL);
 
-					/* add vinyl parameters */
-					tss_request_add_vinyl_tags(request, parameters, NULL);
+					/* Check if we have the required eUICC parameters */
+					int has_euicc_eid = (plist_dict_get_item(parameters, "eUICC,EID") != NULL);
+					int has_euicc_rootkey = (plist_dict_get_item(parameters, "eUICC,RootKeyIdentifier") != NULL);
+
+					/* Log eUICC parameters */
+					logger(LL_INFO, "DEBUG TSS: eUICC,EID present: %s\n", has_euicc_eid ? "yes" : "NO");
+					logger(LL_INFO, "DEBUG TSS: eUICC,RootKeyIdentifier present: %s\n", has_euicc_rootkey ? "yes" : "NO");
+					logger(LL_INFO, "DEBUG TSS: EUICCGoldNonce present: %s\n",
+						plist_dict_get_item(parameters, "EUICCGoldNonce") ? "yes" : "NO");
+					logger(LL_INFO, "DEBUG TSS: EUICCMainNonce present: %s\n",
+						plist_dict_get_item(parameters, "EUICCMainNonce") ? "yes" : "NO");
+
+					/* Only add vinyl tags if we have the required eUICC data from device */
+					if (has_euicc_eid && has_euicc_rootkey) {
+						logger(LL_INFO, "DEBUG TSS: Adding vinyl tags...\n");
+						tss_request_add_vinyl_tags(request, parameters, NULL);
+					} else {
+						logger(LL_INFO, "DEBUG TSS: Skipping vinyl tags - required eUICC data not available from device\n");
+						logger(LL_INFO, "DEBUG TSS: (This is normal when device firmware doesn't provide eUICC signing data)\n");
+					}
+				} else {
+					logger(LL_INFO, "DEBUG TSS: eUICC ChipID < 5, skipping vinyl parameters\n");
 				}
+			} else {
+				logger(LL_INFO, "DEBUG TSS: WARNING - BbSNUM not found, skipping baseband tags!\n");
 			}
+		} else {
+			logger(LL_INFO, "DEBUG TSS: WARNING - No FirmwarePreflightInfo received!\n");
 		}
 		client->firmware_preflight_info = pinfo;
 		pinfo = NULL;
 
+		logger(LL_INFO, "DEBUG TSS: Getting preflight info...\n");
 		normal_get_preflight_info(client, &pinfo);
+		if (pinfo) {
+			char *pi_xml = NULL;
+			uint32_t pi_len = 0;
+			plist_to_xml(pinfo, &pi_xml, &pi_len);
+			if (pi_xml) {
+				logger(LL_INFO, "DEBUG TSS: PreflightInfo contents:\n%s\n", pi_xml);
+				free(pi_xml);
+			}
+		} else {
+			logger(LL_INFO, "DEBUG TSS: No PreflightInfo available\n");
+		}
 		client->preflight_info = pinfo;
 	}
 
+	/* Log the final TSS request before sending */
+	logger(LL_INFO, "DEBUG TSS: Final TSS request to be sent:\n");
+	{
+		char *req_xml = NULL;
+		uint32_t req_len = 0;
+		plist_to_xml(request, &req_xml, &req_len);
+		if (req_xml) {
+			logger(LL_DEBUG, "%s\n", req_xml);
+			free(req_xml);
+		}
+	}
+
 	/* send request and grab response */
+	logger(LL_INFO, "DEBUG TSS: Sending TSS request to %s...\n", client->tss_url ? client->tss_url : "default Apple TSS server");
 	response = tss_request_send(request, client->tss_url);
 	if (response == NULL) {
-		logger(LL_INFO, "ERROR: Unable to send TSS request\n");
+		logger(LL_ERROR, "ERROR: Unable to send TSS request\n");
+		logger(LL_INFO, "DEBUG TSS: TSS request failed - check parameters above for issues\n");
 		plist_free(request);
 		plist_free(parameters);
 		return -1;
 	}
 
 	logger(LL_INFO, "Received SHSH blobs\n");
+	logger(LL_INFO, "DEBUG TSS: TSS request successful!\n");
 
 	plist_free(request);
 	plist_free(parameters);
