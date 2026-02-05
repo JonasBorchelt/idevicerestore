@@ -5346,29 +5346,98 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 #ifdef HAVE_REVERSE_PROXY
 	logger(LL_INFO, "Starting Reverse Proxy\n");
 	reverse_proxy_client_t rproxy = NULL;
-	if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
-		logger(LL_ERROR, "Could not create Reverse Proxy\n");
-	} else {
+	int rproxy_attempts = 3;
+	int rproxy_success = 0;
+
+	while (rproxy_attempts > 0 && !rproxy_success && !(client->flags & FLAG_QUIT)) {
+		rproxy_attempts--;
+
+		// Check if device is still connected before attempting
+		if (client->mode != MODE_RESTORE) {
+			logger(LL_WARNING, "Device disconnected during Reverse Proxy setup, waiting for reconnection...\n");
+			mutex_lock(&client->device_event_mutex);
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 30000);
+			mutex_unlock(&client->device_event_mutex);
+
+			if (client->mode != MODE_RESTORE || (client->flags & FLAG_QUIT)) {
+				logger(LL_ERROR, "Device did not reconnect in restore mode\n");
+				restore_client_free(client);
+				return -1;
+			}
+
+			// Re-establish restore connection
+			logger(LL_INFO, "Device reconnected, re-establishing restore connection...\n");
+			if (restore_open_with_timeout(client) < 0) {
+				logger(LL_ERROR, "Failed to re-establish restore connection\n");
+				restore_client_free(client);
+				return -1;
+			}
+			restore = client->restore->client;
+			device = client->restore->device;
+		}
+
+		if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
+			logger(LL_ERROR, "Could not create Reverse Proxy (attempt %d of 3)\n", 3 - rproxy_attempts);
+			if (rproxy_attempts > 0) {
+				logger(LL_INFO, "Retrying in 2 seconds...\n");
+				sleep(2);
+			}
+			continue;
+		}
+
 		if (client->flags & FLAG_DEBUG) {
 			reverse_proxy_client_set_log_callback(rproxy, rp_log_cb, NULL);
 		}
 		reverse_proxy_client_set_status_callback(rproxy, rp_status_cb, NULL);
-		if (reverse_proxy_client_start_proxy(rproxy, 2) != REVERSE_PROXY_E_SUCCESS) {
-			logger(LL_ERROR, "Device didn't accept new reverse proxy protocol, trying to use old one\n");
-			reverse_proxy_client_free(rproxy);
-			rproxy = NULL;
-			if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
-				logger(LL_ERROR, "Could not create Reverse Proxy\n");
-			} else {
-				if (client->flags & FLAG_DEBUG) {
-					reverse_proxy_client_set_log_callback(rproxy, rp_log_cb, NULL);
-				}
-				reverse_proxy_client_set_status_callback(rproxy, rp_status_cb, NULL);
-				if (reverse_proxy_client_start_proxy(rproxy, 1) != REVERSE_PROXY_E_SUCCESS) {
-					logger(LL_ERROR, "ReverseProxy: Device didn't accept old protocol, giving up\n");
-				}
-			}
+
+		if (reverse_proxy_client_start_proxy(rproxy, 2) == REVERSE_PROXY_E_SUCCESS) {
+			rproxy_success = 1;
+			break;
 		}
+
+		logger(LL_ERROR, "Device didn't accept new reverse proxy protocol, trying to use old one\n");
+		reverse_proxy_client_free(rproxy);
+		rproxy = NULL;
+
+		// Check again if device disconnected during the attempt
+		if (client->mode != MODE_RESTORE) {
+			logger(LL_WARNING, "Device disconnected while starting proxy, will retry...\n");
+			continue;
+		}
+
+		if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
+			logger(LL_ERROR, "Could not create Reverse Proxy for old protocol\n");
+			if (rproxy_attempts > 0) {
+				logger(LL_INFO, "Retrying in 2 seconds...\n");
+				sleep(2);
+			}
+			continue;
+		}
+
+		if (client->flags & FLAG_DEBUG) {
+			reverse_proxy_client_set_log_callback(rproxy, rp_log_cb, NULL);
+		}
+		reverse_proxy_client_set_status_callback(rproxy, rp_status_cb, NULL);
+
+		if (reverse_proxy_client_start_proxy(rproxy, 1) == REVERSE_PROXY_E_SUCCESS) {
+			rproxy_success = 1;
+			break;
+		}
+
+		logger(LL_ERROR, "ReverseProxy: Device didn't accept old protocol either (attempt %d of 3)\n", 3 - rproxy_attempts);
+		reverse_proxy_client_free(rproxy);
+		rproxy = NULL;
+
+		if (rproxy_attempts > 0) {
+			logger(LL_INFO, "Retrying in 2 seconds...\n");
+			sleep(2);
+		}
+	}
+
+	if (!rproxy_success) {
+		logger(LL_ERROR, "Failed to establish Reverse Proxy after multiple attempts\n");
+		restore_client_free(client);
+		return -1;
 	}
 #else
 	fdr_client_t fdr_control_channel = NULL;
