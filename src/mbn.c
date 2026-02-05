@@ -80,6 +80,21 @@ typedef struct {
 	uint32_t unk_0x14; // some offset
 } mbn_bin_header;
 
+// ICE16/ICE18 PSI format (psi_ram.bin, restorepsi.bin)
+// Has "liHU" magic at offset 4, total_size at offset 0x10
+#define ICE_PSI_MAGIC "liHU"
+#define ICE_PSI_MAGIC_SIZE 4
+#define ICE_PSI_MAGIC_OFFSET 4
+
+typedef struct {
+	uint32_t unk_0x00;        // 0xFFFFFFFF
+	unsigned char magic[4];   // "liHU"
+	uint32_t unk_0x08;
+	uint32_t unk_0x0c;
+	uint32_t total_size;      // total file size at offset 0x10
+	uint32_t unk_0x14;
+} ice_psi_header;
+
 typedef struct
 {
 	uint32_t reserved;
@@ -219,6 +234,9 @@ void* mbn_stitch(const void* data, size_t data_size, const void* blob, size_t bl
 	} else if (data_size > MBN_BIN_MAGIC_SIZE+MBN_BIN_MAGIC_OFFSET && memcmp((uint8_t*)data+MBN_BIN_MAGIC_OFFSET, (uint8_t*)MBN_BIN_MAGIC, MBN_BIN_MAGIC_SIZE) == 0) {
 		parsed_size = ((mbn_bin_header*)data)->total_size;
 		logger(LL_DEBUG, "%s: encountered MBN BIN image, parsed_size = 0x%zx\n", __func__, parsed_size);
+	} else if (data_size > sizeof(ice_psi_header) && memcmp((uint8_t*)data+ICE_PSI_MAGIC_OFFSET, ICE_PSI_MAGIC, ICE_PSI_MAGIC_SIZE) == 0) {
+		parsed_size = ((ice_psi_header*)data)->total_size;
+		logger(LL_DEBUG, "%s: encountered ICE16/18 PSI image, parsed_size = 0x%zx\n", __func__, parsed_size);
 	} else if (mbn_is_valid_elf(data, data_size)) {
 		if (mbn_is_64bit_elf(data)) {
 			const elf64_header* ehdr = data;
@@ -257,7 +275,7 @@ void* mbn_stitch(const void* data, size_t data_size, const void* blob, size_t bl
 	} else {
 		logger(LL_WARNING, "Unknown file format passed to %s\n", __func__);
 	}
-	if (parsed_size != data_size) {
+	if (parsed_size > 0 && parsed_size != data_size) {
 		logger(LL_WARNING, "%s: size mismatch for MBN data, expected 0x%zx, input size 0x%zx\n", __func__, parsed_size, data_size);
 	}
 
